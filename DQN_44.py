@@ -1,30 +1,24 @@
 # Test basic movement 44: Collision Avoidance
 # RL Framework: Deep Q-learning
-# Image as a state
+# Depth image as a state
 # Saved model: trained_DQN_PC_44.h5
 # Action spaces: 4 Dimensions [Forward, Left, Right, Backward]
 # Note: Use DepthImage (Gray-scale), New reward shaping function, Use gradient method instead of fitting.
-# Trained episode: 440
-# self.step = 25000
+# Trained episode: 1500
+# self.step = 102400 (Full)
 
 
 import airsim  # Import airsim API
-import keras.layers
-# import pprint
-# import cv2
-import numpy as np
-import math
+import numpy as np  # Import numpy
+import math  # Import math for Python
 from random import random, randint, choice, randrange
-from time import sleep
+from time import sleep  # Import sleep for delaying
 
 # ******************************************* Keras, Tensorflow library declaration ************************************
-import tensorflow as tf
+import tensorflow as tf  # Tensorflow
 from keras.layers import Conv2D, Dense, BatchNormalization, Activation, Input, MaxPool2D, Flatten, Concatenate
 from keras.models import Sequential, load_model, Model
 from keras.optimizers import RMSprop, Adam
-# import keras.backend as k
-# from tensorflow import gather_nd
-from keras.losses import mean_squared_error
 # ******************************************* Keras, Tensorflow library declaration ************************************
 
 
@@ -41,36 +35,34 @@ class DQLearning:
 
         # Initialise Map
         self.map_x = 100
-        self.map_y = 80
-        self.min_depth_meter = 0
-        self.max_depth_meter = 50
+        self.map_y = 100
+        self.min_depth_meter = 0  # Minimum distance of depth camera
+        self.max_depth_meter = 50  # Maximum distance of depth camera
 
         # Initialise State Parameters
-        self.death_flag = False
-        self.terminated = False
+        self.death_flag = False  # Dead indicator
+        self.terminated = False  # Terminated indicator
         self.buffer_size = 102400  # Experience Replay Buffer size
         self.batch_buffer_size = 128  # Sampling batch size
-        self.actions = [0, 1, 2, 3]
-        self.number_distance_sensor = 4
-        self.distance_target_dimension = 1  # <-- Progression in percent
+        self.actions = [0, 1, 2, 3]  # Action space --> [0=Forward, 1=Left, 2=Right, 3=Backward]
+        self.distance_target_dimension = 1  # <-- Number of progression in percent
         # Current state parameters
         self.state = []  # S_t
-        self.distance_sensors = np.zeros([self.number_distance_sensor], dtype=float)
-        self.distance_target = np.zeros([self.distance_target_dimension], dtype=float)
+        self.progression = np.zeros([self.distance_target_dimension], dtype=float)  # Progression variable
         # Next state parameters
         self.next_state = self.state  # S_{t+1}
-        self.next_distance_sensors = np.zeros([self.number_distance_sensor], dtype=float)
-        self.next_distance_target = np.zeros([self.distance_target_dimension], dtype=float)
-        self.reward = 0  # R_{t+1}
-        self.step = 25001  # Counter for storing the experiences
-        self.img_width = 84
-        self.img_height = 84
+        self.next_progression = np.zeros([self.distance_target_dimension], dtype=float)  # Next progression variable
+        self.reward = 0  # R_{t}
+        self.step = 1  # Counter for storing the experiences
+        self.img_width = 84  # state image width
+        self.img_height = 84  # state image height
         self.img_depth = 1  # <-- Image data type (1 = Black and White), (3 = RGB)
-        self.append_reward = []
-        self.prev_dis = 0
-        self.indices = np.zeros([self.batch_buffer_size, 2])
-        self.indices[:, 0] = np.arange(self.batch_buffer_size)
-        self.grad_glob_norm = 0
+        self.append_reward = []  # Variable to store episode reward.
+        self.prev_dis = 0  # Previous distance between the destination and the agent.
+        self.indices = np.zeros([self.batch_buffer_size, 2])  # Indices variable for slice the Q-value
+        self.indices[:, 0] = np.arange(self.batch_buffer_size)  # First index which indicates the number of batch size.
+        self.grad_glob_norm = 0  # Global gradient <-- Just to visualise the gradient of the network.
+        self.cost = 0  # Value from cost function
 
         # Get the initial latitude and longitude
         self.lat0 = self.drone.getMultirotorState().gps_location.latitude  # Get the initial latitude
@@ -80,39 +72,36 @@ class DQLearning:
         self.next_drone_coordinates = self.drone_coordinates  # Next coordinates of the drone
 
         # Initialise the Target position
-        self.final_coordinates = [100, 0]
-        self.allowed_y = 5
-        self.max_dis = np.sqrt((self.final_coordinates[0]**2)+(self.final_coordinates[1]**2))
+        self.final_coordinates = [100, 0]  # Coordinate of the destination
+        self.allowed_y = 5  # Allowed y value for the agent.
+        self.max_dis = np.sqrt((self.final_coordinates[0]**2)+(self.final_coordinates[1]**2))  # Compute for max distance.
 
         # Create Experience Relay Buffer [S_t, a_t, death_flag, R_{t+1}, S_{t+1}]
-        # self.current_state_img = np.zeros([self.buffer_size, self.img_height, self.img_width, self.img_depth], dtype=float)
-        # self.current_state_distance = np.zeros([self.buffer_size, self.number_distance_sensor], dtype=float)
-        # self.action_data = np.zeros([self.buffer_size], dtype=int)
-        # self.death_flag_data = np.zeros([self.buffer_size], dtype=bool)
-        # self.reward_data = np.zeros([self.buffer_size], dtype=float)
-        # self.next_state_img = np.zeros([self.buffer_size, self.img_height, self.img_width, self.img_depth])
-        # self.next_state_distance = np.zeros([self.buffer_size, self.number_distance_sensor], dtype=float)
+        self.current_state_img = np.zeros([self.buffer_size, self.img_height, self.img_width, self.img_depth], dtype=float)  # Buffer of state
+        self.action_data = np.zeros([self.buffer_size], dtype=int)  # Buffer of action
+        self.death_flag_data = np.zeros([self.buffer_size], dtype=bool)  # Buffer of death_flag
+        self.reward_data = np.zeros([self.buffer_size], dtype=float)  # Buffer of reward
+        self.next_state_img = np.zeros([self.buffer_size, self.img_height, self.img_width, self.img_depth])  # Buffer of next state
 
-        # Load the Saved Experienced Replay Buffer (erb)
-        loaded_erb = np.load('ERB_DQN_44.npz')
-        self.current_state_img = loaded_erb['arr_0']
-        self.current_state_distance = loaded_erb['arr_1']
-        self.action_data = loaded_erb['arr_2']
-        self.death_flag_data = loaded_erb['arr_3']
-        self.reward_data = loaded_erb['arr_4']
-        self.next_state_img = loaded_erb['arr_5']
-        self.next_state_distance = loaded_erb['arr_6']
+        # Load the Saved Experienced Replay Buffer (erb) if continue training.
+        # loaded_erb = np.load('ERB_DQN_44.npz')
+        # self.current_state_img = loaded_erb['arr_0']
+        # self.action_data = loaded_erb['arr_1']
+        # self.death_flag_data = loaded_erb['arr_2']
+        # self.reward_data = loaded_erb['arr_3']
+        # self.next_state_img = loaded_erb['arr_4']
 
-        # Initialise Action-Value Network
-        # self.q_predict = self.action_value_network()  # <-- Action-Value Network (Predict)
-        self.q_predict = load_model('trained_DQN_44.h5')
+        # Initialise Network Parameters
+        self.q_predict = self.action_value_network()  # <-- Action-Value Network (Predict)
+        # self.q_predict = load_model('Trained_Models/trained_DQN_45.h5')  # Load last saved model if continue training.
         self.q_target = self.action_value_network()  # <-- Action-Value Network (Target)
         self.q_target.set_weights(self.q_predict.get_weights())
         self.update_count = 0  # Counter For Updating The Target Network
         self.update_period = 100  # Period For The Counter
-        self.full_flag = False
+        self.full_flag = True  # This variable indicates that the ERB is already full or not.
         self.fit_step = 128  # Defined Period For Fit The Prediction Network
-        self.training_record = 440 + 1
+        self.training_record = 1500 + 1  # Training record
+        self.epoch = 5  # Gradient updating epoch times
 
     # Taking Off Method
     def takeoff(self, delay):
@@ -153,20 +142,11 @@ class DQLearning:
         img_dense_1 = Dense(128)(flatten_1)
         img_dense_2 = Dense(128)(img_dense_1)
 
-        # Input_2: Distance_sensor_input (self.distance_sensors)
-        distance_inputs = Input(shape=self.number_distance_sensor)
-        distance_dense_1 = Dense(self.number_distance_sensor * 16)(distance_inputs)
-        distance_dense_2 = Dense(self.number_distance_sensor * 16)(distance_dense_1)
-        distance_activation_1 = Activation('relu')(distance_dense_2)
-
-        # Concatenate layer_1 (img + distance_sensors)
-        merge_1 = keras.layers.concatenate([img_dense_2, distance_activation_1])
-
         # Output layers
-        outputs = Dense(len(self.actions), activation='linear')(merge_1)
+        outputs = Dense(len(self.actions), activation='linear')(img_dense_2)
 
         # Define the model
-        model = Model(inputs=[img_input, distance_inputs], outputs=outputs, name='action_value_model')
+        model = Model(inputs=img_input, outputs=outputs, name='action_value_model')
         model.compile(optimizer=Adam(learning_rate=0.0001, clipnorm=1))
         return model
 
@@ -259,18 +239,9 @@ class DQLearning:
         depth_img = depth_img.reshape(get_img_str.height, get_img_str.width, 1)
         depth_img = np.interp(depth_img, (self.min_depth_meter, self.max_depth_meter), (0, 255))
         self.next_state = depth_img
-        self.next_state = np.expand_dims(self.next_state, axis=0)
-
-        # Get The Distance Sensors Data (Next state S_{t+1})
-        self.next_distance_sensors = [
-            self.drone.getDistanceSensorData("DistanceWest").distance,
-            self.drone.getDistanceSensorData("DistanceNorthWest").distance,
-            self.drone.getDistanceSensorData("DistanceNorthEast").distance,
-            self.drone.getDistanceSensorData("DistanceEast").distance
-        ]
 
         # Get the next difference distance between the target and the drone.
-        self.next_distance_target = progress
+        self.next_progression = progress
         self.prev_dis = dis
         return r
 
@@ -291,22 +262,16 @@ class DQLearning:
     # Network Training Method
     def action_value_network_training(self, indices):
         # Train the network by fit the new input and output features
-        # New input features = New S_t's images from the buffer
-        # New target features = New Q-values defined by the Deep Q-Learning algorithm
         gamma = 0.99  # Discount factor
 
-        # Store S_t and S_{t+1} in the batch experienced replay buffer.
+        # Store the transitions in the batch experienced replay buffer.
         current_state_img_batch = np.zeros([self.batch_buffer_size, self.img_height, self.img_width, self.img_depth], dtype=float)
-        current_state_distance_batch = np.zeros([self.batch_buffer_size, self.number_distance_sensor], dtype=float)
         next_state_img_batch = np.zeros([self.batch_buffer_size, self.img_height, self.img_width, self.img_depth], dtype=float)
-        next_state_distance_batch = np.zeros([self.batch_buffer_size, self.number_distance_sensor], dtype=float)
         action_append = np.zeros([self.batch_buffer_size], dtype=int)
         y_t = np.zeros([self.batch_buffer_size, len(self.actions)], dtype=float)
         for j in range(self.batch_buffer_size):
             current_state_img_batch[j] = self.current_state_img[indices[j]]
-            current_state_distance_batch[j] = self.current_state_distance[indices[j]]
             next_state_img_batch[j] = self.next_state_img[indices[j]]
-            next_state_distance_batch[j] = self.next_state_distance[indices[j]]
             action_append[j] = self.action_data[indices[j]]
 
             # Get the output features data (y_t) (Expected Future Return: Deep Q Network Algorithm)
@@ -319,39 +284,39 @@ class DQLearning:
                 next_state_img_predicted = next_state_img_batch[j]
                 next_state_img_predicted = np.expand_dims(next_state_img_predicted, axis=0)
                 next_state_img_predicted_tensor = tf.convert_to_tensor(next_state_img_predicted)
-                next_state_distance_predicted = next_state_distance_batch[j]
-                next_state_distance_predicted = np.expand_dims(next_state_distance_predicted, axis=0)
-                next_state_distance_predicted_tensor = tf.convert_to_tensor(next_state_distance_predicted)
 
                 y_t[j, self.action_data[indices[j]]] = self.reward_data[indices[j]] + (gamma * np.max(
-                                                       self.q_target([next_state_img_predicted_tensor,
-                                                                      next_state_distance_predicted_tensor]).numpy()[0]))
+                                                       self.q_target(next_state_img_predicted_tensor).numpy()[0]))
 
         # ---------------------------------- Find the gradient of the cost function ------------------------------------
         # ---------------------------------------- Prepare the state data ----------------------------------------------
         # Convert the numpy array to tensor format in order to compute the gradient in the tensorflow's gradient tape
         current_state_img_batch_tensor = tf.convert_to_tensor(current_state_img_batch, dtype=tf.float32)
-        current_state_distance_batch_tensor = tf.convert_to_tensor(current_state_distance_batch, dtype=tf.float32)
         y_true_tensor = tf.convert_to_tensor(y_t, dtype=tf.float32)
-        self.indices[:, 1] = action_append
+        self.indices[:, 1] = action_append  # Second index of slice variable is the actions that sampled from ERB.
 
         # ------------------------------------- Tensorflow's Gradient Tape ---------------------------------------------
-        with tf.GradientTape() as tape:
-            tape.watch(current_state_img_batch_tensor)
-            tape.watch(current_state_distance_batch_tensor)
-            tape.watch(y_true_tensor)
-            y_predict_tensor = self.q_predict([current_state_img_batch_tensor, current_state_distance_batch_tensor])
-            cost = tf.keras.losses.MSE(tf.gather_nd(y_true_tensor, indices=self.indices.astype(int)),
-                                       tf.gather_nd(y_predict_tensor, indices=self.indices.astype(int)))
-        # Compute for the gradients
-        cost_gradient = tape.gradient(cost, self.q_predict.trainable_variables)
-        glob_gradient = tf.linalg.global_norm(cost_gradient)  # Compute the global gradient norm (just to visualise)
-        self.grad_glob_norm = glob_gradient.numpy()
-        # Apply Gradients
-        self.q_predict.optimizer.apply_gradients(zip(cost_gradient, self.q_predict.trainable_variables))
-        self.q_predict.save("trained_DQN_44.h5")  # Save the model
+        # Compute the gradient in loop for self.epoch times
+        for m in range(self.epoch):
+            with tf.GradientTape() as tape:
+                tape.watch(current_state_img_batch_tensor)
+                tape.watch(y_true_tensor)
+                y_predict_tensor = self.q_predict(current_state_img_batch_tensor)
+                # Cost function <-- Mean Square Error
+                # Use the tf.gather_nd to slice only the Q-value of selected action from ERB.
+                # Update only the Q-value from the selected action
+                cost = tf.keras.losses.MSE(tf.gather_nd(y_true_tensor, indices=self.indices.astype(int)),
+                                           tf.gather_nd(y_predict_tensor, indices=self.indices.astype(int)))
+            # Compute for the gradients
+            self.cost = cost.numpy()
+            cost_gradient = tape.gradient(cost, self.q_predict.trainable_variables)
+            glob_gradient = tf.linalg.global_norm(cost_gradient)  # Compute the global gradient norm (just to visualise)
+            self.grad_glob_norm = glob_gradient.numpy()
+            # Apply Gradients
+            self.q_predict.optimizer.apply_gradients(zip(cost_gradient, self.q_predict.trainable_variables))
+        self.q_predict.save("Trained_Models/trained_DQN_44.h5")  # Save the model
 
-        # Update Target Network's Weight
+        # Update Target Network's Weights
         self.update_count += 1
         if self.update_count >= self.update_period:
             self.q_target.set_weights(self.q_predict.get_weights())
@@ -360,13 +325,13 @@ class DQLearning:
 
     # ---------------------------------------------- Main loop start ---------------------------------------------------
     def agent_training(self, episode):
-        epsilon = 0.248  # Initial epsilon value
+        epsilon = 0.1  # Initial epsilon value = 1, minimum = 0.1
         for i in range(episode):
             self.drone.reset()  # Reset the drone
             self.drone.enableApiControl(True)  # Enable API control for airsim
             # Initialise the starting location of the drone
             pose = self.drone.simGetVehiclePose()
-            init_y = randrange(10, 70)  # Random y position in the environment
+            init_y = randrange(10, 90)  # Random y position in the environment
             pose.position.y_val = init_y
             self.drone.simSetVehiclePose(pose, False)
             self.takeoff(0)  # Take off the drone
@@ -380,10 +345,9 @@ class DQLearning:
             self.terminated = False  # Terminated flag
             fit = False  # Fit flag
             sum_episode_reward = 0  # Cumulative reward for each episode
-            step_count = 0
+            step_count = 0  # step count in one episode
 
             # ----------------------------------- Prepare current state input (S_t) start ------------------------------
-            # ---------------------------------- S_t = S_{t_1} + S_{t_2} + S_{t_3} -------------------------------------
             # Current state 1 (S_{t_1})
             # Get The Depth Image (84 x 84 x 1) (Gray scale)
             get_img_str, = self.drone.simGetImages([airsim.ImageRequest("0", airsim.ImageType.DepthPerspective, True, False)])
@@ -391,25 +355,15 @@ class DQLearning:
             depth_img = depth_img.reshape(get_img_str.height, get_img_str.width, 1)
             depth_img = np.interp(depth_img, (self.min_depth_meter, self.max_depth_meter), (0, 255))
             self.state = depth_img
-            self.state = np.expand_dims(self.state, axis=0)
-
-            # Current state 2 (S_{t_2})
-            # Get the distance sensors data
-            self.distance_sensors = [
-                self.drone.getDistanceSensorData("DistanceWest").distance,
-                self.drone.getDistanceSensorData("DistanceNorthWest").distance,
-                self.drone.getDistanceSensorData("DistanceNorthEast").distance,
-                self.drone.getDistanceSensorData("DistanceEast").distance
-            ]
 
             # Get the initial location of the agent
             self.drone_coordinates = self.coordinates()
             # Compute for the euclidean distance of the drone
             distance_target = np.sqrt((self.final_coordinates[0] - self.drone_coordinates[0])**2 +
                                       (self.final_coordinates[1] - self.drone_coordinates[1])**2)
-            self.max_dis = distance_target
-            self.prev_dis = distance_target
-            self.distance_target = 100 - (100 * distance_target / self.max_dis)
+            self.max_dis = distance_target  # Set max distance between the drone and the target.
+            self.prev_dis = distance_target  # Initialise the distance between the drone and the target.
+            self.progression = 100 - (100 * distance_target / self.max_dis)  # Compute the progression.
             # ------------------------------------ Prepare current state input (S_t) end -------------------------------
 
             # Adaptive Epsilon Value
@@ -426,10 +380,9 @@ class DQLearning:
                     selected_action = choice(self.actions)
                 else:
                     # Select the max Q-value in the Q(S,a)
-                    img_state_tensor = tf.convert_to_tensor(self.state)
-                    distance_sensors_tensor = np.expand_dims(self.distance_sensors, axis=0)
-                    distance_sensors_tensor = tf.convert_to_tensor(distance_sensors_tensor)
-                    q_predicted = self.q_predict([img_state_tensor, distance_sensors_tensor])
+                    img_state = np.expand_dims(self.state, axis=0)
+                    img_state_tensor = tf.convert_to_tensor(img_state)
+                    q_predicted = self.q_predict(img_state_tensor)
                     max_q = np.unravel_index(np.argmax(q_predicted.numpy()[0]), q_predicted.shape)
                     selected_action = max_q[1]
 
@@ -444,12 +397,10 @@ class DQLearning:
                     self.full_flag = True
                 # Store in the buffers
                 self.current_state_img[self.step] = self.state
-                self.current_state_distance[self.step] = self.distance_sensors
                 self.action_data[self.step] = selected_action
                 self.death_flag_data[self.step] = self.death_flag
                 self.reward_data[self.step] = self.reward
                 self.next_state_img[self.step] = self.next_state
-                self.next_state_distance[self.step] = self.next_distance_sensors
 
                 # Check fit flag --> If the step divided by the fit_step no. equals to zero --> set fit_flag 'True'
                 if self.step % self.fit_step == 0:
@@ -460,32 +411,36 @@ class DQLearning:
                         # If the ERB is already full and the step count is reached, terminated and fit (fit = True)
                         fit = True
 
-                # Save the buffer every 10,000 steps
+                # # Save the buffer every 5,000 steps
                 if self.step % 5000 == 0:
-                    np.savez('ERB_DQN_44', self.current_state_img, self.current_state_distance,
+                    np.savez('ERB_DQN_44', self.current_state_img,
                              self.action_data, self.death_flag_data, self.reward_data,
-                             self.next_state_img, self.next_state_distance)
+                             self.next_state_img)
 
                 # Step increment
                 self.step += 1
                 step_count += 1
 
                 # Update the state
-                if self.death_flag or step_count >= 128:
-                    # If the next state is death, terminated.
+                if self.death_flag or step_count >= self.fit_step:
+                    # If the next state is death, or already over 128 steps --> terminated.
                     self.terminated = True
                     if self.step >= self.batch_buffer_size or self.full_flag:
+                        # Start to learn the model only when the data in ERB are more than batch buffer size.
                         fit = True
                 else:
                     # If the next state is not death, continue to the next step.
                     self.state = self.next_state  # Get the next image as current img
-                    self.distance_target = self.next_distance_target  # Get the next distance target as current
-                    self.distance_sensors = self.next_distance_sensors
+                    self.progression = self.next_progression  # Get the next distance target as current
                     self.drone_coordinates = self.next_drone_coordinates  # Get the next location as current location
 
             # Store Episode's Reward
             self.append_reward.append(sum_episode_reward)
-            np.save('append_reward_44', self.append_reward)
+            np.save('Append_Reward/append_reward_44', self.append_reward)
+
+            # Save the model every 1000 episodes
+            if (self.training_record + i) % 100 == 0:
+                self.q_predict.save('Trained_Models/DQN_44_{:d}.h5'.format(self.training_record + i))
 
             # If the fit flag is true --> Train The Network
             if fit:
@@ -507,7 +462,7 @@ class DQLearning:
             # Print the status of Learning.
             print('Episode: ', i + self.training_record, ', Step: ', self.step, ', Sum_reward: ', sum_episode_reward,
                   ', Avg_reward: ', np.sum(self.append_reward)/len(self.append_reward), ', Progression: ',
-                  self.distance_target, ', Gradient: ', self.grad_glob_norm)
+                  self.progression, ', Loss: ', self.cost, ', Gradient: ', self.grad_glob_norm)
     # ---------------------------------------------- Main loop end -----------------------------------------------------
 # ******************************************* Deep Q learning class end ************************************************
 
@@ -516,8 +471,8 @@ class DQLearning:
 # Training the drone
 if __name__ == "__main__":
     droneDQL = DQLearning()  # <-- Create drone Deep Q-learning object
-    droneDQL.agent_training(5000)  # <-- Training the drone (episode)
+    droneDQL.agent_training(1500)  # <-- Training the drone (episode)
 
     droneDQL.q_predict.summary()
-    droneDQL.q_predict.save("trained_DQN_44.h5")
+    droneDQL.q_predict.save("Trained_Models/trained_DQN_44.h5")
 # ******************************************* Main Program End *********************************************************
